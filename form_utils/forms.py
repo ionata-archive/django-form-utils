@@ -10,14 +10,72 @@ from django import forms
 from django.forms.util import flatatt, ErrorDict
 from django.utils.safestring import mark_safe
 
+class Row(object):
+
+    def __init__(self, fieldset, fields):
+        self.fieldset = fieldset
+        self.form = fieldset.form
+
+        if not isinstance(fields, (list, tuple)):
+            fields = (fields,)
+
+        self.fields = [n for n in fields if n in self.form.fields]
+        boundfields = [forms.forms.BoundField(self.form, self.form.fields[n], n)
+                       for n in self.fields]
+
+        self.boundfields = boundfields
+
+    def _row_attrs(self):
+        row_attrs = {}
+        for boundfield in self.boundfields:
+            field_attrs = deepcopy(self.form._row_attrs.get(boundfield.name, {}))
+            row_attrs.update(field_attrs)
+
+            if boundfield.field.required:
+                req_class = 'required'
+            else:
+                req_class = 'optional'
+            if 'class' in row_attrs:
+                row_attrs['class'] = row_attrs['class'] + ' ' + req_class
+            else:
+                row_attrs['class'] = req_class
+
+        try:
+            classes = set(row_attrs['class'].split(' '))
+            row_attrs['class'] = ' '.join(sorted(classes))
+        except KeyError:
+            pass
+
+        return mark_safe(flatatt(row_attrs))
+    row_attrs = property(_row_attrs)
+
+    def _errors(self):
+        return ErrorDict(((k, v) for (k, v) in self.form.errors.iteritems()
+                          if k in [f.name for f in self.boundfields]))
+    errors = property(_errors)
+
+    def __len__(self):
+        return len(self.boundfields)
+
+    def __iter__(self):
+        for boundfield in self.boundfields:
+            yield _mark_row_attrs(boundfield, self.form)
+
+    def __getitem__(self, key):
+        return self.boundfields[key]
+
+    def __repr__(self):
+        return "%s"
+
 class Fieldset(object):
     """
     An iterable Fieldset with a legend and a set of BoundFields.
 
     """
-    def __init__(self, form, name, boundfields, legend='', classes='', description=''):
+    def __init__(self, form, name, rows, legend='', classes='', description=''):
         self.form = form
-        self.boundfields = boundfields
+        self.rows = [Row(self, row) for row in rows]
+
         if legend is None: legend = name
         self.legend = legend and mark_safe(legend)
         self.classes = classes
@@ -26,18 +84,21 @@ class Fieldset(object):
 
 
     def _errors(self):
-        return ErrorDict(((k, v) for (k, v) in self.form.errors.iteritems()
-                          if k in [f.name for f in self.boundfields]))
+        return ErrorDict(((k, v) for row in self.rows for (k, v) in row.errors))
     errors = property(_errors)
 
+    def __len__(self):
+        return len(self.rows)
+
     def __iter__(self):
-        for bf in self.boundfields:
-            yield _mark_row_attrs(bf, self.form)
+        for row in self.rows:
+            yield row
 
     def __repr__(self):
         return "%s('%s', %s, legend='%s', classes='%s', description='%s')" % (
             self.__class__.__name__, self.name,
-            [f.name for f in self.boundfields], self.legend, self.classes, self.description)
+            [f.name for r in self.rows for f in r.boundfields], self.legend,
+            self.classes, self.description)
 
 class FieldsetCollection(object):
     def __init__(self, form, fieldsets):
@@ -68,14 +129,12 @@ class FieldsetCollection(object):
                                         'legend': ''}),)
         for name, options in self.fieldsets:
             try:
-                field_names = [n for n in options['fields']
-                               if n in self.form.fields]
+                row_data = options['fields']
             except KeyError:
-                raise ValueError("Fieldset definition must include 'fields' option." )
-            boundfields = [forms.forms.BoundField(self.form, self.form.fields[n], n)
-                           for n in field_names]
+                raise ValueError(
+                    "Fieldset definition must include 'fields' option." )
             self._cached_fieldsets.append(Fieldset(self.form, name,
-                boundfields, options.get('legend', None), 
+                row_data, options.get('legend', None), 
                 ' '.join(options.get('classes', ())),
                 options.get('description', '')))
 
@@ -115,8 +174,13 @@ def get_fields_from_fieldsets(fieldsets):
     """
     fields = []
     try:
-        for name, options in fieldsets:
-            fields.extend(options['fields'])
+        for _, options in fieldsets:
+            for row in options['fields']:
+                if isinstance(row, (list, tuple)):
+                    fields.extend(row)
+                else:
+                    fields.append(row)
+
     except (TypeError, KeyError):
         raise ValueError('"fieldsets" must be an iterable of two-tuples, '
                          'and the second tuple must be a dictionary '
@@ -130,20 +194,18 @@ def get_row_attrs(bases, attrs):
     """
     return _get_meta_attr(attrs, 'row_attrs', {})
 
-def _mark_row_attrs(bf, form):
-    row_attrs = deepcopy(form._row_attrs.get(bf.name, {}))
-    if bf.field.required:
+def _mark_row_attrs(boundfield, form):
+    row_attrs = deepcopy(form._row_attrs.get(boundfield.name, {}))
+    if boundfield.field.required:
         req_class = 'required'
     else:
         req_class = 'optional'
-    if bf.errors:
-        req_class += ' error'
     if 'class' in row_attrs:
         row_attrs['class'] = row_attrs['class'] + ' ' + req_class
     else:
         row_attrs['class'] = req_class
-    bf.row_attrs = mark_safe(flatatt(row_attrs))
-    return bf
+    boundfield.row_attrs = mark_safe(flatatt(row_attrs))
+    return boundfield
 
 class BetterFormBaseMetaclass(type):
     def __new__(cls, name, bases, attrs):
