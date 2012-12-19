@@ -13,22 +13,32 @@ from django.utils.safestring import mark_safe
 
 from form_utils.settings import JQUERY_URL, FORM_UTILS_MEDIA_URL
 
+thumbnail_engine = None
 try:
-    from sorl.thumbnail.main import DjangoThumbnail
-    def thumbnail(image_path, width, height):
-        t = DjangoThumbnail(relative_source=image_path, requested_size=(width,height))
-        return u'<img src="%s" alt="%s" />' % (t.absolute_url, image_path)
+    from sorl import thumbnail
+    thumbnail_engine = 'sorl'
 except ImportError:
     try:
-        from easy_thumbnails.files import get_thumbnailer
-        def thumbnail(image_path, width, height):
-            thumbnail_options = dict(size=(width, height), crop=True)
-            thumbnail = get_thumbnailer(image_path).get_thumbnail(thumbnail_options)
-            return u'<img src="%s" alt="%s" />' % (thumbnail.url, image_path)
+        from easy_thumbnails import files
+        thumbnail_engine = 'easy_thumbnails'
     except ImportError:
-        def thumbnail(image_path, width, height):
-            absolute_url = posixpath.join(settings.MEDIA_URL, image_path)
-            return u'<img src="%s" alt="%s" />' % (absolute_url, image_path)
+        pass
+
+if thumbnail_engine == 'sorl':
+    from sorl.thumbnail import get_thumbnail
+    def thumbnail(image_path, width, height):
+        t = get_thumbnail(image_path, '%sx%s' % (width, height))
+        return u'<img src="%s" alt="%s" />' % (t.url, image_path)
+elif thumbnail_engine == 'easy_thumbnails':
+    from easy_thumbnails.files import get_thumbnailer
+    def thumbnail(image_path, width, height):
+        thumbnail_options = dict(size=(width, height), crop=True)
+        thumbnail = get_thumbnailer(image_path).get_thumbnail(thumbnail_options)
+        return u'<img src="%s" alt="%s" />' % (thumbnail.url, image_path)
+else:
+    def thumbnail(image_path, width, height):
+        absolute_url = posixpath.join(settings.MEDIA_URL, image_path)
+        return u'<img src="%s" alt="%s" />' % (absolute_url, image_path)
 
 class ImageWidget(forms.FileInput):
     template = '%(input)s<br />%(image)s'
